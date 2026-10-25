@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- MeshTalk logo, scaled from supplied 680px SVG into adaptive-icon safe zone. -->
+    <path
+        android:fillColor="#2DD4BF"
+        android:pathData="M36.5,39.7C36.5,35.4 40.3,34.9 41.3,34.9L66.7,34.9C71.2,34.9 71.5,38.7 71.5,39.7L71.5,58.8C71.5,63.3 67.7,63.5 66.7,63.5L47.6,63.5L39.7,71.5L41.3,63.5C38.4,63.5 36.5,61.7 36.5,58.8Z" />
+    <path
+        android:strokeColor="#0D2B3D"
+        android:strokeWidth="1.3"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M46,42.9L54,50.8L62.8,44.5M54,50.8L52.4,58" />
+    <path
+        android:fillColor="#0D2B3D"
+        android:pathData="M46,39.1m-2.5,0a2.5,2.5 0,1 1,5,0a2.5,2.5 0,1 1,-5,0M62.8,40.7m-2.5,0a2.5,2.5 0,1 1,5,0a2.5,2.5 0,1 1,-5,0M54,50.8m-3.2,0a3.2,3.2 0,1 1,6.4,0a3.2,3.2 0,1 1,-6.4,0M52.4,58m-2.5,0a2.5,2.5 0,1 1,5,0a2.5,2.5 0,1 1,-5,0" />
+</vector>
