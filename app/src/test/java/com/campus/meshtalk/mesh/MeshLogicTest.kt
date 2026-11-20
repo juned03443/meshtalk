@@ -65,4 +65,23 @@ class MeshLogicTest {
         assertEquals(cr.fromName, decoded?.fromName)
         assertEquals(cr.fromPublicKey, decoded?.fromPublicKey)
     }
+
+    @Test
+    fun testEndpointNameHelperFormatAndParse() {
+        val meshId = "MT-AAAA-2222"
+        val name = "Alice"
+        val formatted = EndpointNameHelper.format(meshId, name)
+        assertEquals("MT-AAAA-2222|Alice", formatted)
+
+        val parsed = EndpointNameHelper.parse(formatted)
+        org.junit.Assert.assertNotNull(parsed)
+        assertEquals(meshId, parsed?.meshId)
+        assertEquals(name, parsed?.displayName)
+
+        // Plain ID without pipe
+        val parsedPlain = EndpointNameHelper.parse(meshId)
+        org.junit.Assert.assertNotNull(parsedPlain)
+        assertEquals(meshId, parsedPlain?.meshId)
+        assertEquals(meshId, parsedPlain?.displayName)
+    }
 }

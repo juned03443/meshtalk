@@ -61,6 +61,17 @@ fun ProfileSetupScreen(
         if (uri != null) {
             isProcessingImage = true
             coroutineScope.launch {
+                // Validate URI before processing - check it's not malformed
+                if (uri.scheme == null || uri.authority.isNullOrBlank()) {
+                    isProcessingImage = false
+                    Toast.makeText(
+                        context,
+                        "Invalid image selection: Unable to read the picked media",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@launch
+                }
+
                 val result = ImageUtils.processAndSaveAvatar(
                     context = context,
                     sourceUri = uri,
@@ -70,11 +81,22 @@ fun ProfileSetupScreen(
                 result.onSuccess { savedPath ->
                     currentAvatarUri = savedPath
                 }.onFailure { error ->
+                    // Provide descriptive error message for debugging
+                    val errorMsg = error.localizedMessage ?: "Unknown error"
+                    val userMessage = when (error) {
+                        is IllegalArgumentException -> "Invalid image format or corrupted file"
+                        is IllegalStateException -> "Failed to process the image. Please try another photo."
+                        is java.io.IOException -> "Storage error. Please free up space and try again."
+                        else -> "Failed to load image: $errorMsg"
+                    }
                     Toast.makeText(
                         context,
-                        "Failed to load image: ${error.localizedMessage ?: "Unknown error"}",
+                        userMessage,
                         Toast.LENGTH_SHORT
                     ).show()
+
+                    // Log the full error for debugging
+                    android.util.Log.w("ProfileSetupScreen", "Image processing failed", error)
                 }
             }
         }

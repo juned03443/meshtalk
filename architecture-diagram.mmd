@@ -1,0 +1,104 @@
+%% Mermaid Architecture Diagram for MeshTalk
+graph TD
+    %% UI Layer
+    subgraph UI["🎨 UI Layer\n(Jetpack Compose)"]
+        MA[MainActivity] -->|Screen Flow| SP[SplashScreen]
+        MA -->|Screen Flow| IS[IdentitySetupScreen]
+        MA -->|Screen Flow| PS[ProfileSetupScreen]
+        MA -->|Screen Flow| PT[PermissionScreen]
+        MA -->|Screen Flow| MAIN[MainAppContent]
+        MAIN -->|Tab Navigation| CHATS[Chats Tab]
+        MAIN -->|Tab Navigation| RADAR[Radar Tab]
+        MAIN -->|Tab Navigation| DIAG[Diagnostics Tab]
+        MAIN -->|Tab Navigation| SETTINGS[Settings Tab]
+        CHATS -->|Message Display| CB[Chat bubbles/GlassBubble]
+        RADAR -->|Peer Discovery| RV[Radar visualization]
+        SETTINGS -->|Preferences| TF[Theme/Scan/Relay]
+    end
+
+    %% Application Layer
+    subgraph APP["📱 Application Layer"]
+        MTA[MeshTalkApp]
+    end
+
+    %% Data Layer
+    subgraph DB["💾 Data Layer\n(Room DB)"]
+        MD[MeshTalkDatabase]
+        MD -->|Entities| ME[MessageEntity]
+        MD -->|Entities| SE[SeenPacketEntity]
+        MD -->|Entities| QM[QueuedMessageEntity]
+        MD -->|Entities| CO[ContactEntity]
+        MD -->|Entities| CR[ConnectionRequestEntity]
+        MD -->|Entities| BU[BlockedUserEntity]
+        MD -->|Entities| RP[RelayPacketEntity]
+        MD -->|Entities| SO[SignalingOutboxEntity]
+        MD -->|DAOs| MessageDao
+        MD -->|DAOs| SeenPacketDao
+        MD -->|DAOs| ContactDao
+        MD -->|DAOs| ConnectionRequestDao
+        MD -->|DAOs| BlockedUserDao
+        MD -->|DAOs| RelayPacketDao
+        MD -->|DAOs| SignalingOutboxDao
+    end
+
+    %% Mesh Networking Layer
+    subgraph MESH["📡 Mesh Networking Layer"]
+        NM[NearbyMeshManager]
+        MR[MeshRouter]
+        CS[ContactSignaling]
+        BP[BatteryPreferencesRepo]
+    end
+
+    %% Cryptography
+    subgraph CRYPTO["🔐 Cryptography"]
+        CE[CryptoEngine]
+    end
+
+    %% Repositories
+    subgraph REPO["📦 Repositories"]
+        UR[UserPreferencesRepository]
+        PR[ProfileRepository]
+        IR[IdentityRepository]
+        MR2[NearbyPeopleRepository]
+    end
+
+    %% Connections
+    MTA -->|initializes| MD
+    MTA -->|creates keyPair, deviceId| MTA
+    MTA -->|sets up| NM
+    MTA -->|sets up| MR
+    MTA -->|sets up| CS
+    MTA -->|sets up| BP
+    MTA -->|provides| UR
+    MTA -->|provides| PR
+    MTA -->|provides| IR
+    MTA -->|provides| MR2
+
+    NM -->|uses| CE
+    MR -->|uses| CE
+    CS -->|uses| CE
+
+    MR -->|routes messages| MD
+    CS -->|signals connections| MD
+    CS -->|handles requests| CS
+
+    NM -->|peer events| MR
+    NM -->|connected peers| UI
+    MR -->|peer data| UI
+
+    UI -->|sends messages| MR
+    UI -->|types/composes| MTA
+    MTA -->|provides data| UI
+
+    UI -->|requests permissions| PT
+    PT -->|grants permissions| MTA
+
+    UI -->|settings changes| BP
+    BP -->|scan mode| MR
+    BP -->|relay mode| MR
+
+    classDef app fill:#e3f2fd,stroke:#1976d2,stroke-width:2px;
+    classDef db fill:#e8f5e9,stroke:#388e3c,stroke-width:2px;
+    classDef mesh fill:#fff3e0,stroke:#fb8c00,stroke-width:2px;
+    classDef crypto fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px;
+    classDef repo fill:#e0f2f1,stroke:#00838f,stroke-width:2px;

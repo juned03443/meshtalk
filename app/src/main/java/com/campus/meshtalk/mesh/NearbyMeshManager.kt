@@ -195,9 +195,11 @@ class NearbyMeshManager(private val context: Context) {
                     Log.i(TAG, "Connection established with $endpointId ($statusStr)")
                     endpointRetryCounts.remove(endpointId)
                     val remoteMtId = endpointToMtId[endpointId] ?: endpointId
+                    val displayName = _discoveredEndpoints.value[endpointId]?.displayName
+                        ?: remoteMtId
                     val peer = MeshPeer(
                         endpointId = endpointId,
-                        deviceName = remoteMtId,
+                        deviceName = displayName,
                         meshTalkId = remoteMtId
                     )
                     _connectedPeers.value = _connectedPeers.value + (remoteMtId to peer)
@@ -237,7 +239,7 @@ class NearbyMeshManager(private val context: Context) {
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             when (payload.type) {
-                Payload.Type.BYTE_BUFFER -> {
+                Payload.Type.BYTES -> {
                     val data = payload.asBytes()
                     if (data != null) {
                         _incomingPayloads.tryEmit(endpointId to data)
@@ -292,24 +294,27 @@ class NearbyMeshManager(private val context: Context) {
             .setStrategy(STRATEGY)
             .build()
 
-        // Correct order: AdvertisingOptions **before** ConnectionLifecycleCallback
         connectionsClient.startAdvertising(
             localNickname,
             SERVICE_ID,
-            options,
-            connectionLifecycleCallback
-        )
-
-        _isAdvertising.value = true
-        Log.i(TAG, "startAdvertising success for endpointName=$localNickname")
-
-        advertiseRetryJob = managerScope.launch {
-            val delayMs = Random.nextLong(6000L, 12001L)
-            Log.d(TAG, "Advertising retry scheduled in ${delayMs}ms")
-            delay(delayMs)
-            if (isDesiredRunning && !_isAdvertising.value) {
-                Log.i(TAG, "Retrying startAdvertising for $localAdvertisedId")
-                startAdvertising(localAdvertisedId)
+            connectionLifecycleCallback,
+            options
+        ).addOnSuccessListener {
+            _isAdvertising.value = true
+            _lastError.value = null
+            Log.i(TAG, "startAdvertising success for endpointName=$localNickname")
+        }.addOnFailureListener { e ->
+            _isAdvertising.value = false
+            val statusStr = getExceptionStatusString(e)
+            Log.e(TAG, "startAdvertising failed for $localNickname: $statusStr", e)
+            _lastError.value = "Advertise failed: $statusStr"
+            advertiseRetryJob = managerScope.launch {
+                val delayMs = Random.nextLong(4000L, 8000L)
+                delay(delayMs)
+                if (isDesiredRunning && !_isAdvertising.value) {
+                    Log.i(TAG, "Retrying startAdvertising for $localAdvertisedId")
+                    startAdvertising(localMeshId, localDisplayName)
+                }
             }
         }
     }
@@ -333,16 +338,22 @@ class NearbyMeshManager(private val context: Context) {
             SERVICE_ID,
             endpointDiscoveryCallback,
             options
-        )
-        _isDiscovering.value = true
-        Log.i(TAG, "startDiscovery success")
-        discoveryRetryJob = managerScope.launch {
-            val delayMs = Random.nextLong(6000L, 12001L)
-            Log.d(TAG, "Discovery retry scheduled in ${delayMs}ms")
-            delay(delayMs)
-            if (isDesiredRunning && !_isDiscovering.value) {
-                Log.i(TAG, "Retrying startDiscovery")
-                startDiscovery()
+        ).addOnSuccessListener {
+            _isDiscovering.value = true
+            _lastError.value = null
+            Log.i(TAG, "startDiscovery success")
+        }.addOnFailureListener { e ->
+            _isDiscovering.value = false
+            val statusStr = getExceptionStatusString(e)
+            Log.e(TAG, "startDiscovery failed: $statusStr", e)
+            _lastError.value = "Discovery failed: $statusStr"
+            discoveryRetryJob = managerScope.launch {
+                val delayMs = Random.nextLong(4000L, 8000L)
+                delay(delayMs)
+                if (isDesiredRunning && !_isDiscovering.value) {
+                    Log.i(TAG, "Retrying startDiscovery")
+                    startDiscovery()
+                }
             }
         }
     }
@@ -356,6 +367,14 @@ class NearbyMeshManager(private val context: Context) {
         isDesiredRunning = false
         stopAdvertising()
         stopDiscovery()
+    }
+
+    fun restartMesh() {
+        stopAll()
+        if (localMeshId.isNotEmpty()) {
+            startAdvertising(localMeshId, localDisplayName)
+            startDiscovery()
+        }
     }
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
@@ -385,6 +404,14 @@ class NearbyMeshManager(private val context: Context) {
                 initiateConnection(endpointId, remoteMtId)
             } else {
                 Log.i(TAG, "Tie‑breaker: local mesh ID ($localMeshId) >= remote ($remoteMtId). Waiting for incoming request.")
+                // Fallback timer: if remote peer fails to initiate connection within 4 seconds, initiate ourselves
+                managerScope.launch {
+                    delay(4000L)
+                    if (!_connectedPeers.value.containsKey(remoteMtId) && !_inFlightRequests.value.contains(endpointId)) {
+                        Log.i(TAG, "Tie-breaker fallback: remote node did not connect in 4s. Requesting connection.")
+                        initiateConnection(endpointId, remoteMtId, force = true)
+                    }
+                }
             }
         }
 
@@ -400,21 +427,24 @@ class NearbyMeshManager(private val context: Context) {
         }
     }
 
-    private fun initiateConnection(endpointId: String, remoteMtId: String) {
-        if (!shouldInitiateConnection(localMeshId, remoteMtId)) {
+    fun initiateConnection(endpointId: String, remoteMtId: String, force: Boolean = false) {
+        if (!force && !shouldInitiateConnection(localMeshId, remoteMtId)) {
             Log.d(TAG, "Skipping connection initiation to $endpointId ($remoteMtId) – tie‑breaker failed.")
             return
         }
-        Log.d(TAG, "Initiating connection to $endpointId ($remoteMtId)")
-        connectionsClient.requestConnection(endpointId, SERVICE_ID, connectionLifecycleCallback)
+        val localName = if (localAdvertisedId.isNotBlank()) localAdvertisedId else localMeshId
+        Log.i(TAG, "Initiating connection from $localName to $endpointId ($remoteMtId)")
+        _inFlightRequests.value = _inFlightRequests.value + endpointId
+        connectionsClient.requestConnection(localName, endpointId, connectionLifecycleCallback)
             .addOnSuccessListener {
                 Log.i(TAG, "requestConnection success to $endpointId")
             }
             .addOnFailureListener { e ->
+                _inFlightRequests.value = _inFlightRequests.value - endpointId
                 val statusStr = getExceptionStatusString(e)
                 Log.e(TAG, "requestConnection failed for $endpointId: $statusStr", e)
+                _lastError.value = "Connect failed: $statusStr"
             }
-        _inFlightRequests.value = _inFlightRequests.value + endpointId
     }
 
     private fun scheduleConnectionRetry(endpointId: String, remoteMtId: String) {
@@ -424,9 +454,9 @@ class NearbyMeshManager(private val context: Context) {
         Log.i(TAG, "Scheduling connection retry to $endpointId ($remoteMtId) in ${delayMs}ms")
         managerScope.launch {
             delay(delayMs)
-            if (shouldInitiateConnection(localMeshId, remoteMtId)) {
+            if (!_connectedPeers.value.containsKey(remoteMtId) && !_inFlightRequests.value.contains(endpointId)) {
                 Log.i(TAG, "Retrying requestConnection to $endpointId ($remoteMtId)")
-                initiateConnection(endpointId, remoteMtId)
+                initiateConnection(endpointId, remoteMtId, force = true)
             }
         }
     }
@@ -445,13 +475,22 @@ class NearbyMeshManager(private val context: Context) {
             }
     }
 
-    fun broadcastPayload(data: ByteArray, excludeEndpointId: String? = null) {
+    fun broadcastPayload(data: ByteArray, excludeEndpointId: String? = null, messageId: String? = null) {
         val packet = Payload.fromBytes(data)
         val targets = _connectedPeers.value.values
             .map { it.endpointId }
             .filter { it != excludeEndpointId }
         if (targets.isNotEmpty()) {
             connectionsClient.sendPayload(targets, packet)
+                .addOnSuccessListener {
+                    val msgId = messageId ?: packet.id.toString()
+                    payloadIdToMessageId[packet.id] = msgId
+                    Log.d(TAG, "broadcastPayload submitted for payload ${packet.id}")
+                }
+                .addOnFailureListener { e ->
+                    val statusStr = getExceptionStatusString(e)
+                    Log.e(TAG, "broadcastPayload failed: $statusStr", e)
+                }
         }
     }
 }

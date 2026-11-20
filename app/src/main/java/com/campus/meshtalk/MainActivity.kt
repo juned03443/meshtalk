@@ -1,6 +1,7 @@
 package com.campus.meshtalk
 
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
@@ -19,32 +20,59 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.navigation.NavHostController
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.navigation.NavController
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.rememberNavController
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.campus.meshtalk.data.local.entity.MessageEntity
+import com.campus.meshtalk.data.local.entity.MessageStatus
+import com.campus.meshtalk.data.model.MeshPacket
+import com.campus.meshtalk.data.preferences.BleScanMode
 import com.campus.meshtalk.data.preferences.ThemeMode
 import com.campus.meshtalk.data.preferences.UserPreferencesRepository
+import com.campus.meshtalk.mesh.MeshPeer
+import com.campus.meshtalk.service.MeshService
 import com.campus.meshtalk.ui.*
+import com.campus.meshtalk.ui.components.CircularGradientIconButton
+import com.campus.meshtalk.ui.components.GlassBubble
+import com.campus.meshtalk.ui.components.GlassCard
+import com.campus.meshtalk.ui.components.MeshAvatar
+import com.campus.meshtalk.ui.components.MeshGlassScaffold
+import com.campus.meshtalk.ui.components.OnlineStatusIndicator
 import com.campus.meshtalk.ui.theme.*
 import com.campus.meshtalk.util.PermissionHelper
+import dev.chrisbanes.haze.HazeState
 import kotlinx.coroutines.launch
-
-enum class AppScreen {
-    SPLASH,
-    IDENTITY_SETUP,
-    PERMISSIONS,
-    PROFILE_SETUP,
-    MAIN
-}
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.cos
+import kotlin.math.sin
 
 enum class MainTab {
     CHATS,
@@ -78,7 +106,9 @@ class MainActivity : FragmentActivity() {
         setContent {
             val themeMode by prefsRepo.themeModeFlow.collectAsState(initial = ThemeMode.SYSTEM)
             val reduceTransparency by prefsRepo.reduceTransparencyFlow.collectAsState(initial = false)
-            val isProfileSetup by app.profileRepository.isProfileSetup.collectAsState(initial = false)
+            val isProfileSetupFromRepo by app.profileRepository.isProfileSetup.collectAsState(initial = false)
+            val isProfileSetup = app.isProfileSetup || isProfileSetupFromRepo
+            val hasValidKeyPair = app.keyPair != null && app.keyPair.public != null
 
             val isDark = when (themeMode) {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -90,25 +120,24 @@ class MainActivity : FragmentActivity() {
                 darkTheme = isDark,
                 reduceTransparency = reduceTransparency
             ) {
-                var currentScreen by remember {
-                    mutableStateOf(AppScreen.SPLASH)
-                }
+                val navController = rememberNavController()
 
-                when (currentScreen) {
-                    AppScreen.SPLASH -> {
-                        SplashScreen(onFinished = {
-                            currentScreen = if (!isProfileSetup) {
-                                AppScreen.IDENTITY_SETUP
-                            } else if (!PermissionHelper.hasAllPermissions(this@MainActivity)) {
-                                AppScreen.PERMISSIONS
-                            } else {
-                                startMeshServices()
-                                AppScreen.MAIN
-                            }
-                        })
-                    }
+                NavHost(
+                    navController = navController,
+                    startDestination = "splash"
+                ) {
+                    composable("splash") { SplashScreen(onFinished = {
+                        if (!isProfileSetup || !hasValidKeyPair) {
+                            navController.navigate("identity_setup")
+                        } else if (!PermissionHelper.hasAllPermissions(this@MainActivity)) {
+                            navController.navigate("permissions")
+                        } else {
+                            startMeshServices()
+                            navController.navigate("main")
+                        }
+                    }) }
 
-                    AppScreen.IDENTITY_SETUP -> {
+                    composable("identity_setup") {
                         val setupViewModel: SetupViewModel = viewModel(
                             factory = SetupViewModel.Factory(this@MainActivity, app.keyPair)
                         )
@@ -121,59 +150,36 @@ class MainActivity : FragmentActivity() {
                                     profile.statusText.trim(),
                                     profile.avatarPath
                                 )
-                                currentScreen = if (!PermissionHelper.hasAllPermissions(this@MainActivity)) {
-                                    AppScreen.PERMISSIONS
+                                if (!PermissionHelper.hasAllPermissions(this@MainActivity)) {
+                                    navController.navigate("permissions")
                                 } else {
                                     startMeshServices()
-                                    AppScreen.MAIN
+                                    navController.navigate("main")
                                 }
                             }
                         )
                     }
 
-                    AppScreen.PROFILE_SETUP -> {
-                        ProfileSetupScreen(
-                            initialNickname = app.nickname,
-                            initialStatus = app.userStatus,
-                            initialAvatarUri = app.avatarUri,
-                            identiconSeed = app.meshRouter.myPublicKeyBase64,
-                            isEditMode = false,
-                            onComplete = { name, status, avatarUri ->
-                                app.saveProfile(name, status, avatarUri)
-                                currentScreen = if (!PermissionHelper.hasAllPermissions(this@MainActivity)) {
-                                    AppScreen.PERMISSIONS
-                                } else {
-                                    startMeshServices()
-                                    AppScreen.MAIN
-                                }
-                            }
-                        )
-                    }
-
-                    AppScreen.PERMISSIONS -> {
+                    composable("permissions") {
                         if (PermissionHelper.hasAllPermissions(this@MainActivity)) {
                             startMeshServices()
-                            currentScreen = AppScreen.MAIN
+                            navController.navigate("main")
                         } else {
                             PermissionScreen(
                                 onRequestPermissions = {
-                                    permissionCallback = {
-                                        currentScreen = AppScreen.MAIN
-                                    }
-                                    permissionLauncher.launch(PermissionHelper.getRequiredPermissions())
+                                    startMeshServices()
+                                    navController.navigate("main")
                                 }
                             )
                         }
                     }
 
-                    AppScreen.MAIN -> {
-                        MainAppContent(
-                            app = app,
-                            prefsRepo = prefsRepo,
-                            currentThemeMode = themeMode,
-                            reduceTransparency = reduceTransparency
-                        )
-                    }
+                    composable("main") { MainAppContent(
+                        app = app,
+                        prefsRepo = prefsRepo,
+                        currentThemeMode = themeMode,
+                        reduceTransparency = reduceTransparency
+                    ) }
                 }
             }
         }
@@ -181,7 +187,26 @@ class MainActivity : FragmentActivity() {
 
     private fun startMeshServices() {
         if (PermissionHelper.hasNearbyPermissions(this)) {
-            com.campus.meshtalk.service.MeshService.start(this)
+            val app = application as MeshTalkApp
+            val advertiseId = if (app.meshTalkId.isNotBlank()) app.meshTalkId else app.nickname
+            app.nearbyManager.setLocalIdentity(advertiseId, app.nickname)
+            app.nearbyManager.startAdvertising(advertiseId, app.nickname)
+            app.nearbyManager.startDiscovery()
+            try {
+                MeshService.start(this)
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to start MeshService", e)
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (PermissionHelper.hasNearbyPermissions(this)) {
+            val app = application as MeshTalkApp
+            if (!app.nearbyManager.isAdvertising.value || !app.nearbyManager.isDiscovering.value) {
+                startMeshServices()
+            }
         }
     }
 
@@ -270,7 +295,7 @@ private fun MainAppContent(
     }
 
     if (showIdentityScreen) {
-        com.campus.meshtalk.ui.IdentityScreen(
+        IdentityScreen(
             meshId = app.meshTalkId,
             publicKey = app.meshRouter.myPublicKeyBase64,
             nickname = app.nickname,
@@ -294,12 +319,12 @@ private fun MainAppContent(
         val messages by chatViewModel.messages.collectAsState()
 
         // Wrap in glass scaffold
-        com.campus.meshtalk.ui.components.MeshGlassScaffold {
+        MeshGlassScaffold {
             // Reuse the old ChatScreen logic inline with glass components
             val chatConnectedPeers by chatViewModel.connectedPeers.collectAsState()
             var inputText by remember { mutableStateOf("") }
             var selectedHopLimit by remember { mutableStateOf(4) }
-            val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+            val listState = rememberLazyListState()
 
             LaunchedEffect(messages.size) {
                 if (messages.isNotEmpty()) {
@@ -307,21 +332,21 @@ private fun MainAppContent(
                 }
             }
 
-            androidx.compose.material3.Scaffold(
+            Scaffold(
                 containerColor = theme.background,
                 topBar = {
-                    com.campus.meshtalk.ui.components.GlassCard(
+                    GlassCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 6.dp)
                             .statusBarsPadding(),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
+                        shape = RoundedCornerShape(20.dp)
                     ) {
-                        androidx.compose.foundation.layout.Row(
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 8.dp, vertical = 8.dp),
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             IconButton(onClick = { activePeerId = null }) {
                                 Icon(
@@ -330,21 +355,21 @@ private fun MainAppContent(
                                     tint = theme.textPrimary
                                 )
                             }
-                            androidx.compose.foundation.layout.Column(modifier = Modifier.weight(1f)) {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = activePeerName,
                                     style = MaterialTheme.typography.titleMedium,
                                     color = theme.textPrimary,
-                                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
+                                    fontWeight = FontWeight.SemiBold
                                 )
-                                androidx.compose.foundation.layout.Row(
-                                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    com.campus.meshtalk.ui.components.OnlineStatusIndicator(
+                                    OnlineStatusIndicator(
                                         isOnline = chatConnectedPeers.isNotEmpty(),
                                         size = 7.dp
                                     )
-                                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.width(6.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
                                     Text(
                                         text = if (chatConnectedPeers.isNotEmpty()) "${chatConnectedPeers.size} Peers (Mesh Active)" else "Scanning...",
                                         color = theme.textSecondary,
@@ -356,18 +381,18 @@ private fun MainAppContent(
                     }
                 },
                 bottomBar = {
-                    com.campus.meshtalk.ui.components.GlassCard(
+                    GlassCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 6.dp)
                             .navigationBarsPadding(),
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
                     ) {
-                        androidx.compose.foundation.layout.Row(
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(8.dp),
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             OutlinedTextField(
                                 value = inputText,
@@ -384,8 +409,8 @@ private fun MainAppContent(
                                     cursorColor = TealBlob
                                 )
                             )
-                            androidx.compose.foundation.layout.Spacer(modifier = Modifier.width(6.dp))
-                            com.campus.meshtalk.ui.components.CircularGradientIconButton(
+                            Spacer(modifier = Modifier.width(6.dp))
+                            CircularGradientIconButton(
                                 onClick = {
                                     if (inputText.isNotBlank()) {
                                         chatViewModel.sendMessage(inputText, selectedHopLimit)
@@ -411,34 +436,34 @@ private fun MainAppContent(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(paddingValues),
-                        contentAlignment = androidx.compose.ui.Alignment.Center
+                        contentAlignment = Alignment.Center
                     ) {
-                        androidx.compose.foundation.layout.Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Icon(
                                 Icons.Default.ChatBubbleOutline,
                                 contentDescription = null,
                                 tint = theme.textMuted,
                                 modifier = Modifier.size(64.dp)
                             )
-                            androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(12.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
                             Text("No messages yet", color = theme.textMuted)
                             Text("Send the first mesh message!", color = theme.textMuted, fontSize = 12.sp)
                         }
                     }
                 } else {
-                    androidx.compose.foundation.lazy.LazyColumn(
+                    LazyColumn(
                         state = listState,
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(paddingValues)
                             .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         items(messages, key = { it.messageId }) { msg ->
                             val isOutgoing = msg.isOutgoing
-                            val alignment = if (isOutgoing) androidx.compose.ui.Alignment.End else androidx.compose.ui.Alignment.Start
+                            val alignment = if (isOutgoing) Alignment.End else Alignment.Start
 
-                            androidx.compose.foundation.layout.Column(
+                            Column(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalAlignment = alignment
                             ) {
@@ -450,28 +475,30 @@ private fun MainAppContent(
                                         modifier = Modifier.padding(start = 6.dp, bottom = 2.dp)
                                     )
                                 }
-                                com.campus.meshtalk.ui.components.GlassBubble(
+                                GlassBubble(
                                     isOutgoing = isOutgoing,
                                     modifier = Modifier.widthIn(max = 280.dp)
                                 ) {
-                                    androidx.compose.foundation.layout.Column {
+                                    Column {
                                         Text(
                                             text = msg.content,
                                             color = theme.textPrimary,
                                             style = MaterialTheme.typography.bodyMedium
                                         )
-                                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(4.dp))
-                                        androidx.compose.foundation.layout.Row(
-                                            modifier = Modifier.align(androidx.compose.ui.Alignment.End),
-                                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Row(
+                                            modifier = Modifier.align(Alignment.End),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Text(
-                                                text = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(msg.timestamp)),
+                                                text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(
+                                                    Date(msg.timestamp)
+                                                ),
                                                 color = theme.textSecondary,
                                                 fontSize = 10.sp
                                             )
                                             if (isOutgoing) {
-                                                androidx.compose.foundation.layout.Spacer(modifier = Modifier.width(4.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
                                                 StatusIcon(msg.status)
                                             }
                                         }
@@ -508,7 +535,7 @@ private fun MainAppContent(
         containerColor = theme.background,
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         bottomBar = {
-            com.campus.meshtalk.ui.components.GlassCard(
+            GlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -589,7 +616,7 @@ private fun MainAppContent(
                     )
                 }
                 MainTab.SETTINGS -> {
-                    val scanMode by app.batteryPrefsRepo.scanModeFlow.collectAsState(initial = com.campus.meshtalk.data.preferences.BleScanMode.BALANCED)
+                    val scanMode by app.batteryPrefsRepo.scanModeFlow.collectAsState(initial = BleScanMode.BALANCED)
                     val relayForOthers by app.batteryPrefsRepo.relayForOthersFlow.collectAsState(initial = true)
                     val relayOnlyWhileCharging by app.batteryPrefsRepo.relayOnlyWhileChargingFlow.collectAsState(initial = false)
                     val blockedUsers by app.database.blockedUserDao().getAllBlockedUsers().collectAsState(initial = emptyList())
@@ -650,14 +677,14 @@ private fun glassNavItemColors() = NavigationBarItemDefaults.colors(
 )
 
 @Composable
-private fun StatusIcon(status: com.campus.meshtalk.data.local.entity.MessageStatus) {
+private fun StatusIcon(status: MessageStatus) {
     val theme = MeshTalkTheme.colors
     when (status) {
-        com.campus.meshtalk.data.local.entity.MessageStatus.PENDING -> Icon(Icons.Default.Schedule, "Pending", tint = Color(0xFFFFB300), modifier = Modifier.size(12.dp))
-        com.campus.meshtalk.data.local.entity.MessageStatus.SENDING -> Icon(Icons.Default.Check, "Sending", tint = theme.textSecondary, modifier = Modifier.size(12.dp))
-        com.campus.meshtalk.data.local.entity.MessageStatus.RELAYED -> Icon(Icons.Default.Sync, "Relayed", tint = TealBlob, modifier = Modifier.size(12.dp))
-        com.campus.meshtalk.data.local.entity.MessageStatus.DELIVERED -> Icon(Icons.Default.DoneAll, "Delivered", tint = TealBlob, modifier = Modifier.size(14.dp))
-        com.campus.meshtalk.data.local.entity.MessageStatus.FAILED -> Icon(Icons.Default.Error, "Failed", tint = Color(0xFFFF5252), modifier = Modifier.size(12.dp))
+        MessageStatus.PENDING -> Icon(Icons.Default.Schedule, "Pending", tint = Color(0xFFFFB300), modifier = Modifier.size(12.dp))
+        MessageStatus.SENDING -> Icon(Icons.Default.Check, "Sending", tint = theme.textSecondary, modifier = Modifier.size(12.dp))
+        MessageStatus.RELAYED -> Icon(Icons.Default.Sync, "Relayed", tint = TealBlob, modifier = Modifier.size(12.dp))
+        MessageStatus.DELIVERED -> Icon(Icons.Default.DoneAll, "Delivered", tint = TealBlob, modifier = Modifier.size(14.dp))
+        MessageStatus.FAILED -> Icon(Icons.Default.Error, "Failed", tint = Color(0xFFFF5252), modifier = Modifier.size(12.dp))
     }
 }
 
@@ -667,14 +694,14 @@ private fun StatusIcon(status: com.campus.meshtalk.data.local.entity.MessageStat
  */
 @Composable
 private fun LegacyChatDashboard(
-    conversations: List<com.campus.meshtalk.data.local.entity.MessageEntity>,
-    connectedPeers: Map<String, com.campus.meshtalk.mesh.MeshPeer>,
+    conversations: List<MessageEntity>,
+    connectedPeers: Map<String, MeshPeer>,
     onSelectConversation: (peerId: String, peerName: String) -> Unit,
     onNewChat: () -> Unit,
     onToggleTheme: () -> Unit
 ) {
     val theme = MeshTalkTheme.colors
-    val hazeState = remember { dev.chrisbanes.haze.HazeState() }
+    val hazeState = remember { HazeState() }
     var searchQuery by remember { mutableStateOf("") }
 
     val filtered = if (searchQuery.isBlank()) conversations
@@ -683,28 +710,28 @@ private fun LegacyChatDashboard(
                 it.content.contains(searchQuery, ignoreCase = true)
     }
 
-    com.campus.meshtalk.ui.components.MeshGlassScaffold(hazeState = hazeState) {
-        androidx.compose.foundation.layout.Column(
+    MeshGlassScaffold(hazeState = hazeState) {
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
         ) {
             // Glass top bar
-            com.campus.meshtalk.ui.components.GlassCard(
+            GlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
                 hazeState = hazeState
             ) {
-                androidx.compose.foundation.layout.Column(
+                Column(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
                 ) {
-                    androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = "MeshTalk",
                             style = MaterialTheme.typography.titleLarge,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            fontWeight = FontWeight.Bold,
                             color = theme.textPrimary,
                             modifier = Modifier.weight(1f)
                         )
@@ -715,11 +742,11 @@ private fun LegacyChatDashboard(
                                 tint = theme.textPrimary
                             )
                         }
-                        com.campus.meshtalk.ui.components.OnlineStatusIndicator(
+                        OnlineStatusIndicator(
                             isOnline = connectedPeers.isNotEmpty(),
                             size = 8.dp
                         )
-                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (connectedPeers.isNotEmpty()) "${connectedPeers.size} peers" else "Scanning...",
                             color = if (connectedPeers.isNotEmpty()) TealBlob else theme.textMuted,
@@ -728,7 +755,7 @@ private fun LegacyChatDashboard(
                     }
 
                     // Search bar
-                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
@@ -755,29 +782,29 @@ private fun LegacyChatDashboard(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(32.dp),
-                    contentAlignment = androidx.compose.ui.Alignment.Center
+                    contentAlignment = Alignment.Center
                 ) {
-                    androidx.compose.foundation.layout.Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.Default.Forum, contentDescription = null, tint = theme.textMuted, modifier = Modifier.size(64.dp))
-                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
                         Text("No conversations yet", color = theme.textPrimary, style = MaterialTheme.typography.titleMedium)
                         Text("Go to Radar to find nearby peers", color = theme.textSecondary, fontSize = 13.sp)
                     }
                 }
             } else {
-                androidx.compose.foundation.lazy.LazyColumn(
+                LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(filtered, key = { it.peerId }) { msg ->
-                        val isBroadcast = msg.peerId == com.campus.meshtalk.data.model.MeshPacket.DESTINATION_BROADCAST
+                        val isBroadcast = msg.peerId == MeshPacket.DESTINATION_BROADCAST
                         val displayName = if (isBroadcast) "Campus Broadcast"
                         else if (msg.isOutgoing) "Peer: ${msg.peerId.take(8)}"
                         else msg.senderName
                         val isOnline = connectedPeers.containsKey(msg.peerId)
 
-                        com.campus.meshtalk.ui.components.GlassCard(
+                        GlassCard(
                             modifier = Modifier.fillMaxWidth(),
                             shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
                             hazeState = hazeState,
@@ -785,43 +812,43 @@ private fun LegacyChatDashboard(
                                 onSelectConversation(msg.peerId, displayName)
                             }
                         ) {
-                            androidx.compose.foundation.layout.Row(
+                            Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(14.dp),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Box {
-                                    com.campus.meshtalk.ui.components.MeshAvatar(
+                                    MeshAvatar(
                                         size = 48.dp,
                                         identiconSeed = msg.peerId,
                                         displayName = displayName
                                     )
                                     if (!isBroadcast) {
-                                        com.campus.meshtalk.ui.components.OnlineStatusIndicator(
+                                        OnlineStatusIndicator(
                                             isOnline = isOnline,
                                             size = 8.dp,
-                                            modifier = Modifier.align(androidx.compose.ui.Alignment.BottomEnd)
+                                            modifier = Modifier.align(Alignment.BottomEnd)
                                         )
                                     }
                                 }
 
-                                androidx.compose.foundation.layout.Spacer(modifier = Modifier.width(14.dp))
+                                Spacer(modifier = Modifier.width(14.dp))
 
-                                androidx.compose.foundation.layout.Column(modifier = Modifier.weight(1f)) {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = displayName,
                                         color = theme.textPrimary,
                                         style = MaterialTheme.typography.titleMedium,
                                         maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
                                         text = if (msg.isOutgoing) "You: ${msg.content}" else msg.content,
                                         color = theme.textSecondary,
                                         fontSize = 13.sp,
                                         maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -832,11 +859,11 @@ private fun LegacyChatDashboard(
         }
 
         // FAB
-        com.campus.meshtalk.ui.components.CircularGradientIconButton(
+        CircularGradientIconButton(
             onClick = onNewChat,
             size = 56.dp,
             modifier = Modifier
-                .align(androidx.compose.ui.Alignment.BottomEnd)
+                .align(Alignment.BottomEnd)
                 .padding(20.dp)
                 .navigationBarsPadding()
         ) {
@@ -850,11 +877,11 @@ private fun LegacyChatDashboard(
  */
 @Composable
 private fun LegacyRadarScreen(
-    connectedPeers: Map<String, com.campus.meshtalk.mesh.MeshPeer>,
+    connectedPeers: Map<String, MeshPeer>,
     onSelectPeer: (peerId: String, peerName: String) -> Unit
 ) {
     val theme = MeshTalkTheme.colors
-    val hazeState = remember { dev.chrisbanes.haze.HazeState() }
+    val hazeState = remember { HazeState() }
 
     val sweepAnim = rememberInfiniteTransition(label = "sweep")
     val sweepAngle by sweepAnim.animateFloat(
@@ -867,13 +894,13 @@ private fun LegacyRadarScreen(
         label = "Sweep"
     )
 
-    com.campus.meshtalk.ui.components.MeshGlassScaffold(hazeState = hazeState) {
-        androidx.compose.foundation.layout.Column(
+    MeshGlassScaffold(hazeState = hazeState) {
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
         ) {
-            com.campus.meshtalk.ui.components.GlassCard(
+            GlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -883,7 +910,7 @@ private fun LegacyRadarScreen(
                 Text(
                     text = "Nearby & Discovery",
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                    fontWeight = FontWeight.SemiBold,
                     color = theme.textPrimary,
                     modifier = Modifier.padding(16.dp)
                 )
@@ -894,39 +921,39 @@ private fun LegacyRadarScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(220.dp),
-                contentAlignment = androidx.compose.ui.Alignment.Center
+                contentAlignment = Alignment.Center
             ) {
-                androidx.compose.foundation.Canvas(
+                Canvas(
                     modifier = Modifier.fillMaxSize().padding(16.dp)
                 ) {
                     val center =
-                        androidx.compose.ui.geometry.Offset(size.width / 2, size.height / 2)
+                        Offset(size.width / 2, size.height / 2)
                     val maxRadius = (size.minDimension / 2) * 0.9f
 
                     drawCircle(
                         color = TealBlob.copy(alpha = 0.15f),
                         radius = maxRadius * 0.33f,
                         center = center,
-                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx())
+                        style = Stroke(width = 1.dp.toPx())
                     )
                     drawCircle(
                         color = TealBlob.copy(alpha = 0.25f),
                         radius = maxRadius * 0.66f,
                         center = center,
-                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx())
+                        style = Stroke(width = 1.dp.toPx())
                     )
                     drawCircle(
                         color = TealBlob.copy(alpha = 0.4f),
                         radius = maxRadius,
                         center = center,
-                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5.dp.toPx())
+                        style = Stroke(width = 1.5.dp.toPx())
                     )
                     drawCircle(color = TealBlob, radius = 7.dp.toPx(), center = center)
 
                     val rad = Math.toRadians(sweepAngle.toDouble())
                     val sweepEnd = androidx.compose.ui.geometry.Offset(
-                        (center.x + maxRadius * kotlin.math.cos(rad)).toFloat(),
-                        (center.y + maxRadius * kotlin.math.sin(rad)).toFloat()
+                        (center.x + maxRadius * cos(rad)).toFloat(),
+                        (center.y + maxRadius * sin(rad)).toFloat()
                     )
                     drawLine(
                         color = TealBlob.copy(alpha = 0.5f),
@@ -940,8 +967,8 @@ private fun LegacyRadarScreen(
                         val angle = (index * (360.0 / peerList.size.coerceAtLeast(1))).toDouble()
                         val dist = maxRadius * 0.6f
                         val blipPos = androidx.compose.ui.geometry.Offset(
-                            (center.x + dist * kotlin.math.cos(Math.toRadians(angle))).toFloat(),
-                            (center.y + dist * kotlin.math.sin(Math.toRadians(angle))).toFloat()
+                            (center.x + dist * cos(Math.toRadians(angle))).toFloat(),
+                            (center.y + dist * sin(Math.toRadians(angle))).toFloat()
                         )
                         drawCircle(color = PurpleBlob, radius = 6.dp.toPx(), center = blipPos)
                         drawCircle(
@@ -957,38 +984,38 @@ private fun LegacyRadarScreen(
                     color = if (connectedPeers.isNotEmpty()) TealBlob else theme.textMuted,
                     fontSize = 12.sp,
                     modifier = Modifier
-                        .align(androidx.compose.ui.Alignment.BottomCenter)
+                        .align(Alignment.BottomCenter)
                         .padding(bottom = 8.dp)
                 )
             }
 
             // Peer list
-            androidx.compose.foundation.lazy.LazyColumn(
+            LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 12.dp),
-                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 // Broadcast channel
                 item {
-                    com.campus.meshtalk.ui.components.GlassCard(
+                    GlassCard(
                         modifier = Modifier.fillMaxWidth(),
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
                         hazeState = hazeState,
                         onClick = {
                             onSelectPeer(
-                                com.campus.meshtalk.data.model.MeshPacket.DESTINATION_BROADCAST,
+                                MeshPacket.DESTINATION_BROADCAST,
                                 "Campus Broadcast"
                             )
                         }
                     ) {
-                        androidx.compose.foundation.layout.Row(
+                        Row(
                             modifier = Modifier.padding(14.dp),
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(Icons.Default.VolumeUp, null, tint = TealBlob)
-                            androidx.compose.foundation.layout.Spacer(modifier = Modifier.width(12.dp))
-                            androidx.compose.foundation.layout.Column(modifier = Modifier.weight(1f)) {
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     "Campus Broadcast",
                                     color = theme.textPrimary,
@@ -1007,9 +1034,9 @@ private fun LegacyRadarScreen(
 
                 if (connectedPeers.isEmpty()) {
                     item {
-                        androidx.compose.foundation.layout.Column(
+                        Column(
                             modifier = Modifier.fillMaxWidth().padding(32.dp),
-                            horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Icon(
                                 Icons.Default.WifiFind,
@@ -1017,7 +1044,7 @@ private fun LegacyRadarScreen(
                                 tint = theme.textMuted,
                                 modifier = Modifier.size(48.dp)
                             )
-                            androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(12.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
                             Text("No peers found yet", color = theme.textMuted, fontSize = 14.sp)
                             Text(
                                 "Keep Bluetooth & Wi-Fi active",
@@ -1028,27 +1055,27 @@ private fun LegacyRadarScreen(
                     }
                 } else {
                     items(connectedPeers.values.toList()) { peer ->
-                        com.campus.meshtalk.ui.components.GlassCard(
+                        GlassCard(
                             modifier = Modifier.fillMaxWidth(),
                             shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
                             hazeState = hazeState,
                             onClick = { onSelectPeer(peer.meshTalkId, peer.deviceName) }
                         ) {
-                            androidx.compose.foundation.layout.Row(
+                            Row(
                                 modifier = Modifier.padding(14.dp),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                com.campus.meshtalk.ui.components.MeshAvatar(
+                                MeshAvatar(
                                     size = 40.dp,
                                     identiconSeed = peer.meshTalkId,
                                     displayName = peer.deviceName
                                 )
-                                androidx.compose.foundation.layout.Spacer(
+                                Spacer(
                                     modifier = Modifier.width(
                                         12.dp
                                     )
                                 )
-                                androidx.compose.foundation.layout.Column(
+                                Column(
                                     modifier = Modifier.weight(
                                         1f
                                     )
@@ -1058,12 +1085,12 @@ private fun LegacyRadarScreen(
                                         color = theme.textPrimary,
                                         style = MaterialTheme.typography.titleMedium
                                     )
-                                    androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                                        com.campus.meshtalk.ui.components.OnlineStatusIndicator(
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        OnlineStatusIndicator(
                                             isOnline = true,
                                             size = 6.dp
                                         )
-                                        androidx.compose.foundation.layout.Spacer(
+                                        Spacer(
                                             modifier = Modifier.width(
                                                 4.dp
                                             )
@@ -1085,5 +1112,3 @@ private fun LegacyRadarScreen(
         }
     }
 }
-
-

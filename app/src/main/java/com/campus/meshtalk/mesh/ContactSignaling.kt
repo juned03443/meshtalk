@@ -99,7 +99,11 @@ class ContactSignaling(
 
     fun sendWireFrame(frame: WireFrame, targetMeshId: String?, floodFallback: Boolean = true) {
         val bytes = frame.toByteArray()
-        val targetEndpoint = if (targetMeshId != null) nearbyManager.mtIdToEndpoint[targetMeshId] else null
+        val targetEndpoint = if (targetMeshId != null) {
+            nearbyManager.mtIdToEndpoint[targetMeshId]
+                ?: nearbyManager.connectedPeers.value[targetMeshId]?.endpointId
+                ?: targetMeshId
+        } else null
         if (targetEndpoint != null) {
             nearbyManager.sendPayload(targetEndpoint, bytes)
         } else if (floodFallback) {
@@ -176,6 +180,16 @@ class ContactSignaling(
                 )
                 contactDao.upsertContact(updated)
             }
+        } else {
+            val newContact = ContactEntity(
+                deviceId = hello.meshId,
+                meshTalkId = hello.meshId,
+                nickname = hello.displayName.ifBlank { "Mesh Peer" },
+                publicKeyBase64 = hello.publicKeyBase64,
+                avatarInitial = hello.displayName.firstOrNull()?.uppercase() ?: "M",
+                lastSeen = now
+            )
+            contactDao.upsertContact(newContact)
         }
         Log.i(TAG, "Processed HELLO from ${hello.meshId} (${hello.displayName})")
     }

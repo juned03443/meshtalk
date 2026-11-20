@@ -23,7 +23,8 @@ object PermissionHelper {
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_ADVERTISE,
                 Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.NEARBY_WIFI_DEVICES
+                Manifest.permission.NEARBY_WIFI_DEVICES,
+                Manifest.permission.ACCESS_FINE_LOCATION
             )
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
@@ -79,6 +80,37 @@ object PermissionHelper {
     }
 
     fun hasAllPermissions(context: Context): Boolean = hasNearbyPermissions(context)
+
+    /** Check only bluetooth permissions (without location) - for chat-time permission requests */
+    fun hasBluetoothOnlyPermissions(context: Context): Boolean = getNearbyPermissions().takeIf { Build.VERSION.SDK_INT < Build.VERSION_CODES.S }?.let { perms ->
+        perms.all { perm ->
+            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+        }
+    } ?: when {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> getNearbyPermissions().take(4).all { perm ->
+            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+        }
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> getNearbyPermissions().take(5).all { perm ->
+            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+        }
+        else -> true
+    }
+
+    /** Get only bluetooth permissions (exclude location) - for chat-time permission requests */
+    fun getBluetoothOnlyPermissions(): Array<String> = when {
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S -> emptyArray()
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_ADVERTISE,
+            Manifest.permission.BLUETOOTH_CONNECT
+        )
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_ADVERTISE,
+            Manifest.permission.BLUETOOTH_CONNECT
+        )
+        else -> emptyArray()
+    }
 
     fun isBluetoothEnabled(context: Context): Boolean {
         val bm = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager

@@ -9,7 +9,8 @@ object EndpointNameHelper {
      */
     fun format(meshId: String, rawName: String): String {
         val sanitizedName = rawName.replace("|", "").trim().take(MAX_DISPLAY_NAME_CHARS)
-        var formatted = "\$meshId|\$sanitizedName"
+        val name = if (sanitizedName.isBlank()) meshId else sanitizedName
+        var formatted = "$meshId|$name"
         while (formatted.toByteArray(Charsets.UTF_8).size > MAX_TOTAL_BYTES && formatted.length > meshId.length + 1) {
             formatted = formatted.dropLast(1)
         }
@@ -21,10 +22,18 @@ object EndpointNameHelper {
     fun parse(endpointName: String?): ParsedEndpoint? {
         if (endpointName.isNullOrBlank()) return null
         val parts = endpointName.split("|")
-        if (parts.size != 2) return null
-        val meshId = parts[0].trim().uppercase()
-        val displayName = parts[1].trim()
-        if (!com.campus.meshtalk.crypto.CryptoEngine.isValidMeshTalkId(meshId)) return null
-        return ParsedEndpoint(meshId, displayName.ifBlank { meshId })
+        if (parts.size >= 2) {
+            val meshId = parts[0].trim().uppercase()
+            val displayName = parts[1].trim()
+            if (com.campus.meshtalk.crypto.CryptoEngine.isValidMeshTalkId(meshId)) {
+                return ParsedEndpoint(meshId, displayName.ifBlank { meshId })
+            }
+        } else if (parts.size == 1) {
+            val meshId = parts[0].trim().uppercase()
+            if (com.campus.meshtalk.crypto.CryptoEngine.isValidMeshTalkId(meshId)) {
+                return ParsedEndpoint(meshId, meshId)
+            }
+        }
+        return null
     }
 }

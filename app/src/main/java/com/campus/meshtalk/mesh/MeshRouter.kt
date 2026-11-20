@@ -339,7 +339,8 @@ class MeshRouter(
         val isBroadcast = packet.recipientId == MeshPacket.DESTINATION_BROADCAST
 
         if (isForMe && contactDao != null && !packet.isAck) {
-            val isContact = contactDao.isAcceptedContact(packet.senderId) || contactDao.isAcceptedContactByDeviceId(packet.senderId)
+            val isDirectPeer = nearbyManager.connectedPeers.value.containsKey(packet.senderId)
+            val isContact = contactDao.isAcceptedContact(packet.senderId) || contactDao.isAcceptedContactByDeviceId(packet.senderId) || isDirectPeer
             if (!isContact) {
                 Log.w("MeshRouter", "Dropped MSG packet from non-contact: ${packet.senderId}")
                 return
@@ -382,12 +383,16 @@ class MeshRouter(
                         }
                     }
 
-                    CryptoEngine.decryptFromPeer(
-                        myPrivateKey = keyPair.private,
-                        ephemeralPublicKeyBase64 = packet.ephemeralPubKey,
-                        nonceBase64 = packet.nonce,
-                        ciphertextBase64 = packet.ciphertext
-                    )
+                    if (packet.ephemeralPubKey.isBlank() || packet.nonce.isBlank()) {
+                        packet.ciphertext
+                    } else {
+                        CryptoEngine.decryptFromPeer(
+                            myPrivateKey = keyPair.private,
+                            ephemeralPublicKeyBase64 = packet.ephemeralPubKey,
+                            nonceBase64 = packet.nonce,
+                            ciphertextBase64 = packet.ciphertext
+                        )
+                    }
                 } catch (e: Exception) {
                     Log.w("MeshRouter", "Decryption failed for packet ${packet.messageId}", e)
                     "[Encrypted message could not be decrypted]"
@@ -493,8 +498,11 @@ class MeshRouter(
         hopLimit: Int = MeshPacket.DEFAULT_MAX_HOPS
     ): MeshPacket {
         val isBroadcast = recipientId == MeshPacket.DESTINATION_BROADCAST
+        val isDirectPeer = nearbyManager.connectedPeers.value.containsKey(recipientId)
         if (!isBroadcast && contactDao != null) {
-            val isAccepted = contactDao.isAcceptedContact(recipientId) || contactDao.isAcceptedContactByDeviceId(recipientId)
+            val isAccepted = contactDao.isAcceptedContact(recipientId) ||
+                    contactDao.isAcceptedContactByDeviceId(recipientId) ||
+                    isDirectPeer
             if (!isAccepted) {
                 throw IllegalStateException("Cannot send message to non-contact: $recipientId. Connection request must be accepted first.")
             }
